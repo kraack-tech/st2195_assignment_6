@@ -1,0 +1,212 @@
+---
+title: "Practice Assignment 6"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+Import speeches.csv and the EUR/US reference exchange rate (fx.csv)
+```{r}
+speeches <- read.csv("speeches.csv", header = TRUE, quote = "", sep = "|" )[ ,c('date', 'contents')]
+fx <- read.csv("fx.csv", header = FALSE, sep = ",", col.names = c("date", "rate", "status", "comment"))[c(7:5938), ]
+
+#chech the data headers
+head(fx)
+head(speeches)
+```
+
+Exclude the comment column in fx
+```{r}
+fx <- fx[, 1:3]
+
+head(fx)
+
+```
+Convert the date from character to POSIX and rate to numeric:
+```{r}
+speeches$date <- as.POSIXct(speeches$date) # converts into POSIX
+fx$date <- as.POSIXct(fx$date) # converts into POSIX
+fx$rate <- as.numeric(as.character(fx$rate)) # converts rate into numerical
+
+#check classesd
+class(speeches$date)
+class(fx$date)
+class(fx$rate)
+```
+
+Join the dataframes 
+```{r}
+library("dplyr")
+
+joined <- fx %>% left_join(speeches) %>% group_by(date) %>% summarise_each(funs(max))  
+
+
+summary(joined) #Summarize df to spot obvious issues
+
+```
+```{r}
+head(joined)
+```
+
+
+It doesn't look like there are any extreme outliers, min & max are in the expected range. 
+
+We have missing status values on 21.02.2003 & 24.02.2004, but both seem correct: So lets also keep them for now.
+
+There is 62 NA's we can fix:
+```{r}
+library(zoo)
+
+NA_fix <- na.locf(joined[,2], fromLast = TRUE) # this replaces NA with previous value.
+
+joined <- NA_fix %>% left_join(joined) %>% group_by(date) %>% summarise_each(funs(max))  #joins the df
+
+summary(joined) #Na's should not be present in the summary now
+
+```
+Let's try to plot the data and see if we visually can spot any outliers
+```{r}
+plot(joined$rate)
+```
+
+Now we can calculate the exchange rate return and extend the dataset with variable "good_news" and "bad_news"
+
+```{r}
+
+add_return <- mutate(joined, return = rate / lag(rate)) #adds return column 
+
+df <- mutate(add_return, good_news = return >= 1.005) %>% 
+  mutate(add_return, bad_news = return <= 0.995) # adds good and bad news variables
+
+```
+
+
+```{r}
+#convert to numeric boolean-values
+
+df$good_news <- as.numeric(df$good_news)
+df$bad_news <- as.numeric(df$bad_news)
+head(df)
+
+```
+
+Below we are creating csv tables with good and bad indicators words for the exchange rate.
+```{r}
+#First we remove NA's from the contents columns
+df_NA_fix <- na.omit(df[,4]) # this removes NA values in the 'df' dataframe.
+
+# Dataframe for good indicators
+df_good <- df_NA_fix %>% left_join(df) %>% group_by(date) %>% summarise_each(funs(max))%>%
+    select(contents, good_news)%>%
+    filter(good_news == 1)  
+
+# Dataframe for bad indicators
+df_bad <- df_NA_fix %>% left_join(df) %>% group_by(date) %>% summarise_each(funs(max))%>%
+    select(contents, bad_news)%>%
+    filter(bad_news == 1)
+
+```
+
+```{r}
+#clean the data and find the common words associated with good and bad indicators
+library(tidytext)
+library(ggplot2)
+library(reshape2)
+
+# for good indicators:
+words1 <- data_frame(Text = df_good$contents) # tibble
+
+good_words <- words1 %>% 
+  unnest_tokens(output = word, input = Text) %>%
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE )
+
+head(good_words, n=23)
+
+# for bad indicators:
+
+words2 <- data_frame(Text = df_bad$contents) 
+
+bad_words <- words2 %>% 
+  unnest_tokens(output = word, input = Text) %>%
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE )
+
+head(bad_words, n=23)
+```
+It's clear that we have to customize the stop words a little bit:
+```{r}
+stop.w <- c("la", "der", "term", "de", "â", "die", "ã")
+stop.c <- melt(stop.w, id.vars = c('word'))
+  colnames(stop.c)[1] <- "word"
+stop.c
+
+stop_words2 <- stop.c %>% full_join(stop_words)
+
+```
+Now lets re-run our code with the custom stop words:
+```{r}
+# for good indicators:
+words1 <- data_frame(Text = df_good$contents) # tibble
+
+good_words <- words1 %>% 
+  unnest_tokens(output = word, input = Text) %>%
+  anti_join(stop_words2) %>%
+  count(word, sort = TRUE )
+
+head(good_words, n=23)
+
+# for bad indicators:
+
+words2 <- data_frame(Text = df_bad$contents) 
+
+bad_words <- words2 %>% 
+  unnest_tokens(output = word, input = Text) %>%
+  anti_join(stop_words2) %>%
+  count(word, sort = TRUE )
+
+head(bad_words, n=23)
+```
+
+
+```{r}
+# save good indicator table to csv:
+
+good_indicators <- good_words %>% head(good_words, n=20)
+write.csv(good_indicators, file = "good_indicators.csv")
+
+# bad indicator table to csv:
+bad_indicators <- bad_words %>% head(bad_words, n=20)
+write.csv(bad_indicators, file = "bad_indicators.csv")
+```
+
+
+we could also produce wordclouds for the common words
+```{r}
+library(wordcloud)
+library(tm)
+
+# wordcloud for good indicators
+pall = brewer.pal(5,"GnBu")
+good_cloud <-wordcloud(words = good_indicators$word, 
+          freq = good_indicators$n, 
+          scale = c(5,.3), 
+          random.order = FALSE,
+          random.color = FALSE,
+          colors = rev(pall)) 
+```
+```{r}
+# wordcloud for bad indicators
+pall2 = brewer.pal(5,"PuRd")
+bad_cloud <- wordcloud(words = bad_indicators$word, 
+          freq = bad_indicators$n, 
+          scale = c(5,.3), 
+          random.order = FALSE,
+          random.color = FALSE,
+          colors = rev(pall2)) 
+
+```
+
+
+Almost the same words and their frequency has an impact, i.e. The data tells us that a bads news for euro = bad_indicator and likewise the other way around. 
